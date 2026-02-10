@@ -34,22 +34,38 @@ export default function VideoPlayer({
   // Track last known progress for seek detection
   const lastProgress = useRef(0);
 
-  // Seek to correct position for late joiners
+  // Reset ready state when the video URL changes so onReady fires fresh
+  useEffect(() => {
+    setReady(false);
+    durationReported.current = false;
+    isSyncing.current = false;
+    lastProgress.current = 0;
+  }, [currentVideo?.url]);
+
+  // Once the new player is actually ready, seek to the correct position
   useEffect(() => {
     if (ready && currentVideo?.startedAt && playerRef.current) {
-      // If paused, seek will be handled by the seekEvent effect
-      if (!isPaused) {
+      if (isPaused && seekEvent) {
+        // Video is paused — seek to the paused position
+        isSyncing.current = true;
+        playerRef.current.seekTo(seekEvent.position, 'seconds');
+        lastProgress.current = seekEvent.position;
+        setTimeout(() => {
+          isSyncing.current = false;
+        }, 500);
+      } else {
+        // Video is playing — seek to where it should be based on elapsed time
         const elapsed = (Date.now() - new Date(currentVideo.startedAt).getTime()) / 1000;
-        if (elapsed > 2) {
+        if (elapsed > 1) {
           isSyncing.current = true;
           playerRef.current.seekTo(elapsed, 'seconds');
+          lastProgress.current = elapsed;
           setTimeout(() => {
             isSyncing.current = false;
           }, 500);
         }
       }
     }
-    durationReported.current = false;
   }, [currentVideo?.url, ready]);
 
   // Handle seek events from the server (for all users)
