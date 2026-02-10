@@ -135,7 +135,7 @@ export default function VideoPlayer({
     // If isPaused is false, playing={true} keeps it going — nothing to revert
   }, [canControl, onHostResume, isPaused]);
 
-  // Progress callback — detect seeks for controllers, snap back for regular users
+  // Progress callback — runs every second for ALL users
   const handleProgress = useCallback(
     (state: { playedSeconds: number }) => {
       if (isSyncing.current) {
@@ -143,32 +143,44 @@ export default function VideoPlayer({
         return;
       }
 
-      const diff = Math.abs(state.playedSeconds - lastProgress.current);
-
+      // Controllers: detect large jumps as intentional seeks to broadcast
       if (canControl) {
-        // Controller: if position jumped, broadcast the seek
+        const diff = Math.abs(state.playedSeconds - lastProgress.current);
         if (diff > 3 && lastProgress.current > 0) {
           onHostSeek(state.playedSeconds);
         }
-      } else if (diff > 3 && lastProgress.current > 0) {
-        // Regular user's position jumped (keyboard seek, drag, etc.): snap back
-        snapToLive();
+      }
+
+      // ALL users: always verify position against the server-authoritative timestamp
+      // If drifted by more than 2 seconds, snap to the correct position
+      let expectedPosition: number | null = null;
+      if (isPaused && seekEvent) {
+        expectedPosition = seekEvent.position;
+      } else if (currentVideo?.startedAt) {
+        expectedPosition = (Date.now() - new Date(currentVideo.startedAt).getTime()) / 1000;
+      }
+
+      if (expectedPosition !== null) {
+        const drift = Math.abs(state.playedSeconds - expectedPosition);
+        if (drift > 2) {
+          snapToLive();
+        }
       }
 
       lastProgress.current = state.playedSeconds;
     },
-    [canControl, onHostSeek, snapToLive]
+    [canControl, onHostSeek, snapToLive, isPaused, seekEvent, currentVideo?.startedAt]
   );
 
-  // onSeek callback — additional snap-back for regular users
+  // onSeek callback — snap everyone back to server position
+  // Controllers' intentional seeks are caught by handleProgress and broadcast first,
+  // then the server event updates startedAt so snapToLive lands on the new position
   const handleSeek = useCallback(
-    (seconds: number) => {
+    (_seconds: number) => {
       if (isSyncing.current) return;
-      if (!canControl) {
-        snapToLive();
-      }
+      snapToLive();
     },
-    [canControl, snapToLive]
+    [snapToLive]
   );
 
   if (!currentVideo) {
@@ -208,8 +220,8 @@ export default function VideoPlayer({
           },
         }}
       />
-      {/* Pause indicator for regular users when host/mod has paused */}
-      {!canControl && isPaused && (
+      {/* Pause indicator when playback is paused */}
+      {isPaused && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40 pointer-events-none">
           <div className="bg-black/70 rounded-full p-4">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-white" viewBox="0 0 24 24" fill="currentColor">
