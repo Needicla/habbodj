@@ -228,7 +228,7 @@ export default function RoomPage() {
               </svg>
               Delete
             </button>
-          )
+          )}
           <div className="text-sm text-gray-400">
             {users.length} user{users.length !== 1 ? 's' : ''}
           </div>
