@@ -26,7 +26,12 @@ export default function RoomPage() {
     messages,
     currentVideo,
     queue,
+    moderators,
     isHost,
+    isModerator,
+    canModerate,
+    isPaused,
+    seekEvent,
     error,
     passwordRequired,
     sendChat,
@@ -39,6 +44,11 @@ export default function RoomPage() {
     submitPassword,
     togglePrivacy,
     deleteRoom,
+    hostPause,
+    hostResume,
+    hostSeek,
+    promoteMod,
+    demoteMod,
   } = useRoom(socket, slug || '', user?._id || '');
 
   if (!connected) {
@@ -150,6 +160,11 @@ export default function RoomPage() {
               HOST
             </span>
           )}
+          {isModerator && !isHost && (
+            <span className="text-[10px] bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded-full font-medium">
+              MOD
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-3">
           {isHost && (
@@ -246,8 +261,17 @@ export default function RoomPage() {
       <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-3 gap-4 p-4 overflow-hidden">
         {/* Left column: Video + Now Playing + Add Video */}
         <div className="lg:col-span-2 flex flex-col gap-4 min-h-0 overflow-y-auto">
-          <VideoPlayer currentVideo={currentVideo} onDuration={reportDuration} />
-          <NowPlaying currentVideo={currentVideo} isHost={isHost} onSkip={skipVideo} />
+          <VideoPlayer
+            currentVideo={currentVideo}
+            canControl={canModerate}
+            isPaused={isPaused}
+            seekEvent={seekEvent}
+            onDuration={reportDuration}
+            onHostPause={hostPause}
+            onHostResume={hostResume}
+            onHostSeek={hostSeek}
+          />
+          <NowPlaying currentVideo={currentVideo} canModerate={canModerate} onSkip={skipVideo} />
           <AddVideoForm onAdd={addVideo} />
 
           {/* Queue - visible on mobile, hidden on desktop (shown in right column) */}
@@ -255,7 +279,7 @@ export default function RoomPage() {
             <VideoQueue
               queue={queue}
               userId={user?._id || ''}
-              isHost={isHost}
+              canModerate={canModerate}
               onVote={vote}
               onRemove={removeVideo}
             />
@@ -268,8 +292,12 @@ export default function RoomPage() {
             users={users}
             hostId={room.creatorId}
             currentUserId={user?._id || ''}
+            moderators={moderators}
             isHost={isHost}
+            canModerate={canModerate}
             onRemoveUser={removeUser}
+            onPromoteMod={promoteMod}
+            onDemoteMod={demoteMod}
           />
 
           {/* Queue - hidden on mobile, visible on desktop */}
@@ -277,7 +305,7 @@ export default function RoomPage() {
             <VideoQueue
               queue={queue}
               userId={user?._id || ''}
-              isHost={isHost}
+              canModerate={canModerate}
               onVote={vote}
               onRemove={removeVideo}
             />

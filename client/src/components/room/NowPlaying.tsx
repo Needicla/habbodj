@@ -3,11 +3,11 @@ import Button from '../ui/Button';
 
 interface NowPlayingProps {
   currentVideo: CurrentVideo | null;
-  isHost: boolean;
+  canModerate: boolean;
   onSkip: () => void;
 }
 
-export default function NowPlaying({ currentVideo, isHost, onSkip }: NowPlayingProps) {
+export default function NowPlaying({ currentVideo, canModerate, onSkip }: NowPlayingProps) {
   if (!currentVideo) return null;
 
   return (
@@ -19,7 +19,7 @@ export default function NowPlaying({ currentVideo, isHost, onSkip }: NowPlayingP
         <p className="text-sm font-medium truncate">{currentVideo.title}</p>
         <p className="text-xs text-gray-500">Added by {currentVideo.addedBy.username}</p>
       </div>
-      {isHost && (
+      {canModerate && (
         <Button variant="ghost" size="sm" onClick={onSkip} className="ml-3 shrink-0">
           Skip ⏭
         </Button>

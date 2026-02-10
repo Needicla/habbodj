@@ -5,12 +5,12 @@ import Button from '../ui/Button';
 interface VideoQueueProps {
   queue: VideoItem[];
   userId: string;
-  isHost: boolean;
+  canModerate: boolean;
   onVote: (videoIndex: number, type: 'up' | 'down') => void;
   onRemove: (videoIndex: number) => void;
 }
 
-export default function VideoQueue({ queue, userId, isHost, onVote, onRemove }: VideoQueueProps) {
+export default function VideoQueue({ queue, userId, canModerate, onVote, onRemove }: VideoQueueProps) {
   return (
     <div className="card flex flex-col h-full">
       <div className="flex items-center justify-between mb-3">
@@ -45,7 +45,7 @@ export default function VideoQueue({ queue, userId, isHost, onVote, onRemove }: 
                   userId={userId}
                   onVote={(type) => onVote(index, type)}
                 />
-                {isHost && (
+                {canModerate && (
                   <Button
                     variant="ghost"
                     size="sm"

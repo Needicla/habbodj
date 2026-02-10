@@ -28,6 +28,7 @@ export interface IRoom extends Document {
   name: string;
   slug: string;
   creatorId: mongoose.Types.ObjectId;
+  moderators: string[]; // userIds with moderator privileges
   isPrivate: boolean;
   password?: string; // bcrypt-hashed
   currentVideo: ICurrentVideo | null;
@@ -83,6 +84,10 @@ const roomSchema = new Schema<IRoom>(
       type: Schema.Types.ObjectId,
       ref: 'User',
       required: true,
+    },
+    moderators: {
+      type: [String],
+      default: [],
     },
     isPrivate: {
       type: Boolean,

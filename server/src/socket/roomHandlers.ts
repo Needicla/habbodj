@@ -2,6 +2,7 @@ import { Server, Socket } from 'socket.io';
 import bcrypt from 'bcryptjs';
 import { Room } from '../models/Room';
 import { User } from '../models/User';
+import { getPlaybackState } from './timerService';
 
 export interface RoomUser {
   _id: string;
@@ -106,10 +107,15 @@ export function registerRoomHandlers(io: Server, socket: Socket): void {
 
       roomPresence.get(roomSlug)!.set(socket.id, roomUser);
 
-      // Send full room state to joining user
+      // Send full room state to joining user (include playback state for sync)
+      const playbackState = getPlaybackState(roomSlug);
       socket.emit('roomState', {
         room: room.toJSON(),
         users: getRoomUsers(roomSlug),
+        playbackState: {
+          isPaused: playbackState.isPaused,
+          pausedAt: playbackState.pausedAt,
+        },
       });
 
       // Broadcast to others

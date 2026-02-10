@@ -38,9 +38,15 @@ export interface RoomData {
   name: string;
   slug: string;
   creatorId: string;
+  moderators: string[];
   isPrivate: boolean;
   currentVideo: CurrentVideo | null;
   queue: VideoItem[];
+}
+
+export interface PlaybackSeekEvent {
+  position: number;
+  timestamp: number;
 }
 
 interface UseRoomReturn {
@@ -49,7 +55,12 @@ interface UseRoomReturn {
   messages: ChatMessage[];
   currentVideo: CurrentVideo | null;
   queue: VideoItem[];
+  moderators: string[];
   isHost: boolean;
+  isModerator: boolean;
+  canModerate: boolean; // host OR moderator
+  isPaused: boolean;
+  seekEvent: PlaybackSeekEvent | null;
   error: string | null;
   passwordRequired: boolean;
   sendChat: (message: string) => void;
@@ -62,6 +73,11 @@ interface UseRoomReturn {
   submitPassword: (password: string) => void;
   togglePrivacy: (isPrivate: boolean, password?: string) => void;
   deleteRoom: () => void;
+  hostPause: () => void;
+  hostResume: () => void;
+  hostSeek: (position: number) => void;
+  promoteMod: (userId: string) => void;
+  demoteMod: (userId: string) => void;
 }
 
 export function useRoom(socket: Socket | null, slug: string, userId: string): UseRoomReturn {
@@ -73,9 +89,14 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
   const [queue, setQueue] = useState<VideoItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [passwordRequired, setPasswordRequired] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [seekEvent, setSeekEvent] = useState<PlaybackSeekEvent | null>(null);
+  const [moderators, setModerators] = useState<string[]>([]);
   const joinedRef = useRef(false);
 
   const isHost = room?.creatorId === userId;
+  const isModerator = moderators.includes(userId);
+  const canModerate = isHost || isModerator;
 
   // Submit password for private room
   const submitPassword = useCallback(
@@ -100,12 +121,26 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
     socket.emit('joinRoom', { roomSlug: slug });
 
     // Room state on join
-    const handleRoomState = (data: { room: RoomData; users: RoomUser[] }) => {
+    const handleRoomState = (data: {
+      room: RoomData;
+      users: RoomUser[];
+      playbackState?: { isPaused: boolean; pausedAt: number };
+    }) => {
       setRoom(data.room);
       setUsers(data.users);
       setCurrentVideo(data.room.currentVideo);
       setQueue(data.room.queue);
+      setModerators(data.room.moderators || []);
       setError(null);
+      // Restore playback state (pause/position) for late joiners
+      if (data.playbackState) {
+        setIsPaused(data.playbackState.isPaused);
+        if (data.playbackState.isPaused && data.playbackState.pausedAt > 0) {
+          setSeekEvent({ position: data.playbackState.pausedAt, timestamp: Date.now() });
+        }
+      } else {
+        setIsPaused(false);
+      }
       // Request chat history
       socket.emit('getChatHistory');
     };
@@ -135,6 +170,8 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
 
     const handleNowPlaying = (data: { video: CurrentVideo | null }) => {
       setCurrentVideo(data.video);
+      setIsPaused(false);
+      setSeekEvent(null);
     };
 
     const handleError = (data: { message: string }) => {
@@ -165,6 +202,28 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
       navigate('/', { replace: true });
     };
 
+    const handlePlaybackPause = (data: { pausedAt: number }) => {
+      setIsPaused(true);
+      setSeekEvent({ position: data.pausedAt, timestamp: Date.now() });
+    };
+
+    const handlePlaybackResume = (data: { startedAt: string }) => {
+      setCurrentVideo((prev) => (prev ? { ...prev, startedAt: data.startedAt } : prev));
+      setIsPaused(false);
+    };
+
+    const handlePlaybackSeek = (data: { position: number; isPaused: boolean; startedAt?: string }) => {
+      setIsPaused(data.isPaused);
+      if (data.startedAt) {
+        setCurrentVideo((prev) => (prev ? { ...prev, startedAt: data.startedAt! } : prev));
+      }
+      setSeekEvent({ position: data.position, timestamp: Date.now() });
+    };
+
+    const handleModeratorsUpdated = (data: { moderators: string[] }) => {
+      setModerators(data.moderators);
+    };
+
     socket.on('roomState', handleRoomState);
     socket.on('chatHistory', handleChatHistory);
     socket.on('userJoined', handleUserJoined);
@@ -177,6 +236,10 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
     socket.on('passwordRequired', handlePasswordRequired);
     socket.on('privacyUpdated', handlePrivacyUpdated);
     socket.on('roomDeleted', handleRoomDeleted);
+    socket.on('playbackPause', handlePlaybackPause);
+    socket.on('playbackResume', handlePlaybackResume);
+    socket.on('playbackSeek', handlePlaybackSeek);
+    socket.on('moderatorsUpdated', handleModeratorsUpdated);
 
     return () => {
       joinedRef.current = false;
@@ -193,6 +256,10 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
       socket.off('passwordRequired', handlePasswordRequired);
       socket.off('privacyUpdated', handlePrivacyUpdated);
       socket.off('roomDeleted', handleRoomDeleted);
+      socket.off('playbackPause', handlePlaybackPause);
+      socket.off('playbackResume', handlePlaybackResume);
+      socket.off('playbackSeek', handlePlaybackSeek);
+      socket.off('moderatorsUpdated', handleModeratorsUpdated);
     };
   }, [socket, slug, navigate]);
 
@@ -253,13 +320,44 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
     if (socket) socket.emit('deleteRoom');
   }, [socket]);
 
+  const hostPause = useCallback(() => {
+    if (socket) socket.emit('hostPause');
+  }, [socket]);
+
+  const hostResume = useCallback(() => {
+    if (socket) socket.emit('hostResume');
+  }, [socket]);
+
+  const hostSeek = useCallback((position: number) => {
+    if (socket) socket.emit('hostSeek', { position });
+  }, [socket]);
+
+  const promoteMod = useCallback(
+    (targetUserId: string) => {
+      if (socket) socket.emit('promoteMod', { userId: targetUserId });
+    },
+    [socket]
+  );
+
+  const demoteMod = useCallback(
+    (targetUserId: string) => {
+      if (socket) socket.emit('demoteMod', { userId: targetUserId });
+    },
+    [socket]
+  );
+
   return {
     room,
     users,
     messages,
     currentVideo,
     queue,
+    moderators,
     isHost,
+    isModerator,
+    canModerate,
+    isPaused,
+    seekEvent,
     error,
     passwordRequired,
     sendChat,
@@ -272,5 +370,10 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
     submitPassword,
     togglePrivacy,
     deleteRoom,
+    hostPause,
+    hostResume,
+    hostSeek,
+    promoteMod,
+    demoteMod,
   };
 }
