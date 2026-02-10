@@ -38,6 +38,8 @@ export default function VideoPlayer({
   const lastSeekTimestamp = useRef(0);
   // Track last known progress for host seek detection
   const lastProgress = useRef(0);
+  // Debounce timer for host pause (YouTube fires onPause during seeks)
+  const pauseDebounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Reset ready state when the video URL changes
   useEffect(() => {
@@ -139,7 +141,13 @@ export default function VideoPlayer({
   const handlePause = useCallback(() => {
     if (isSyncing.current) return;
     if (canControl) {
-      onHostPause();
+      // Debounce: YouTube fires onPause when the user seeks via the scrubber.
+      // Wait briefly — if a seek is detected in handleProgress, cancel this pause.
+      if (pauseDebounceTimer.current) clearTimeout(pauseDebounceTimer.current);
+      pauseDebounceTimer.current = setTimeout(() => {
+        pauseDebounceTimer.current = null;
+        onHostPause();
+      }, 300);
     }
     // Non-controllers: do nothing — server mediaUpdate will correct state
   }, [canControl, onHostPause]);
@@ -163,6 +171,11 @@ export default function VideoPlayer({
       if (canControl) {
         const diff = Math.abs(state.playedSeconds - lastProgress.current);
         if (diff > 3 && lastProgress.current > 0) {
+          // Cancel any pending pause — this was a seek, not a real pause
+          if (pauseDebounceTimer.current) {
+            clearTimeout(pauseDebounceTimer.current);
+            pauseDebounceTimer.current = null;
+          }
           onHostSeek(state.playedSeconds);
         }
       }
