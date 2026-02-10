@@ -32,6 +32,7 @@ export default function RoomPage() {
     canModerate,
     isPaused,
     seekEvent,
+    mediaSync,
     error,
     passwordRequired,
     sendChat,
@@ -266,6 +267,7 @@ export default function RoomPage() {
             canControl={canModerate}
             isPaused={isPaused}
             seekEvent={seekEvent}
+            mediaSync={mediaSync}
             onDuration={reportDuration}
             onHostPause={hostPause}
             onHostResume={hostResume}

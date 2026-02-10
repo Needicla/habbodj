@@ -49,6 +49,11 @@ export interface PlaybackSeekEvent {
   timestamp: number;
 }
 
+export interface MediaSync {
+  currentTime: number;
+  paused: boolean;
+}
+
 interface UseRoomReturn {
   room: RoomData | null;
   users: RoomUser[];
@@ -61,6 +66,7 @@ interface UseRoomReturn {
   canModerate: boolean; // host OR moderator
   isPaused: boolean;
   seekEvent: PlaybackSeekEvent | null;
+  mediaSync: MediaSync | null;
   error: string | null;
   passwordRequired: boolean;
   sendChat: (message: string) => void;
@@ -92,6 +98,7 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
   const [isPaused, setIsPaused] = useState(false);
   const [seekEvent, setSeekEvent] = useState<PlaybackSeekEvent | null>(null);
   const [moderators, setModerators] = useState<string[]>([]);
+  const [mediaSync, setMediaSync] = useState<MediaSync | null>(null);
   const joinedRef = useRef(false);
 
   const isHost = room?.creatorId === userId;
@@ -224,6 +231,10 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
       setModerators(data.moderators);
     };
 
+    const handleMediaUpdate = (data: { currentTime: number; paused: boolean }) => {
+      setMediaSync(data);
+    };
+
     socket.on('roomState', handleRoomState);
     socket.on('chatHistory', handleChatHistory);
     socket.on('userJoined', handleUserJoined);
@@ -240,6 +251,7 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
     socket.on('playbackResume', handlePlaybackResume);
     socket.on('playbackSeek', handlePlaybackSeek);
     socket.on('moderatorsUpdated', handleModeratorsUpdated);
+    socket.on('mediaUpdate', handleMediaUpdate);
 
     return () => {
       joinedRef.current = false;
@@ -260,6 +272,7 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
       socket.off('playbackResume', handlePlaybackResume);
       socket.off('playbackSeek', handlePlaybackSeek);
       socket.off('moderatorsUpdated', handleModeratorsUpdated);
+      socket.off('mediaUpdate', handleMediaUpdate);
     };
   }, [socket, slug, navigate]);
 
@@ -358,6 +371,7 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
     canModerate,
     isPaused,
     seekEvent,
+    mediaSync,
     error,
     passwordRequired,
     sendChat,

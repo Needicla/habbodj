@@ -4,6 +4,9 @@ import { Room, IRoom } from '../models/Room';
 // Per-room timers
 const roomTimers = new Map<string, NodeJS.Timeout>();
 
+// Per-room periodic sync intervals (CyTube-style mediaUpdate)
+const roomSyncIntervals = new Map<string, NodeJS.Timeout>();
+
 // Per-room playback state (pause/seek tracking)
 interface PlaybackState {
   isPaused: boolean;
@@ -24,6 +27,46 @@ export function getPlaybackState(roomSlug: string): PlaybackState {
  */
 export function clearPlaybackState(roomSlug: string): void {
   roomPlaybackState.delete(roomSlug);
+  stopSyncInterval(roomSlug);
+}
+
+/**
+ * Start periodic mediaUpdate broadcasts for a room (CyTube-style sync).
+ * Every 2 seconds, emit the authoritative currentTime + paused state to all clients.
+ */
+export function startSyncInterval(io: Server, roomSlug: string): void {
+  stopSyncInterval(roomSlug);
+
+  const interval = setInterval(async () => {
+    const state = getPlaybackState(roomSlug);
+    let currentTime: number;
+
+    if (state.isPaused) {
+      currentTime = state.pausedAt;
+    } else {
+      const room = await Room.findOne({ slug: roomSlug });
+      if (!room?.currentVideo?.startedAt) return;
+      currentTime = (Date.now() - new Date(room.currentVideo.startedAt).getTime()) / 1000;
+    }
+
+    io.to(roomSlug).emit('mediaUpdate', {
+      currentTime,
+      paused: state.isPaused,
+    });
+  }, 500);
+
+  roomSyncIntervals.set(roomSlug, interval);
+}
+
+/**
+ * Stop periodic mediaUpdate broadcasts for a room.
+ */
+export function stopSyncInterval(roomSlug: string): void {
+  const existing = roomSyncIntervals.get(roomSlug);
+  if (existing) {
+    clearInterval(existing);
+    roomSyncIntervals.delete(roomSlug);
+  }
 }
 
 /**
@@ -71,6 +114,7 @@ export async function advanceQueue(io: Server, roomSlug: string): Promise<void> 
       // No more videos
       room.currentVideo = null;
       await room.save();
+      stopSyncInterval(roomSlug);
       io.to(roomSlug).emit('nowPlaying', { video: null });
       io.to(roomSlug).emit('queueUpdated', { queue: room.queue });
       console.log(`[Timer] Room ${roomSlug}: queue empty`);
@@ -95,6 +139,9 @@ export async function advanceQueue(io: Server, roomSlug: string): Promise<void> 
     if (nextVideo.duration > 0) {
       startVideoTimer(io, roomSlug, nextVideo.duration);
     }
+
+    // Start periodic sync broadcasts
+    startSyncInterval(io, roomSlug);
 
     console.log(`[Timer] Room ${roomSlug}: now playing "${nextVideo.title}"`);
   } catch (error) {
@@ -130,6 +177,8 @@ export function handleDurationReport(io: Server, roomSlug: string, durationSecon
       room.save();
 
       startVideoTimer(io, roomSlug, remaining);
+      // Ensure sync interval is running
+      startSyncInterval(io, roomSlug);
     });
   }
 }

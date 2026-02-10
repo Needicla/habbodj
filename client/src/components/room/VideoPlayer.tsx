@@ -1,23 +1,28 @@
 import { useRef, useCallback, useEffect, useState } from 'react';
 import ReactPlayer from 'react-player';
-import type { CurrentVideo, PlaybackSeekEvent } from '../../hooks/useRoom';
+import type { CurrentVideo, PlaybackSeekEvent, MediaSync } from '../../hooks/useRoom';
 
 interface VideoPlayerProps {
   currentVideo: CurrentVideo | null;
   canControl: boolean; // true for host and moderators
   isPaused: boolean;
   seekEvent: PlaybackSeekEvent | null;
+  mediaSync: MediaSync | null;
   onDuration: (duration: number) => void;
   onHostPause: () => void;
   onHostResume: () => void;
   onHostSeek: (position: number) => void;
 }
 
+// How far off (in seconds) the client can be before we force-seek.
+const SYNC_ACCURACY = 2;
+
 export default function VideoPlayer({
   currentVideo,
   canControl,
   isPaused,
   seekEvent,
+  mediaSync,
   onDuration,
   onHostPause,
   onHostResume,
@@ -27,14 +32,14 @@ export default function VideoPlayer({
   const [ready, setReady] = useState(false);
   const durationReported = useRef(false);
 
-  // Track whether we're programmatically seeking/correcting (to ignore callbacks)
+  // Track whether we're programmatically seeking (to ignore callbacks)
   const isSyncing = useRef(false);
   // Track the last seek event timestamp we processed
   const lastSeekTimestamp = useRef(0);
-  // Track last known progress for seek detection
+  // Track last known progress for host seek detection
   const lastProgress = useRef(0);
 
-  // Reset ready state when the video URL changes so onReady fires fresh
+  // Reset ready state when the video URL changes
   useEffect(() => {
     setReady(false);
     durationReported.current = false;
@@ -42,33 +47,27 @@ export default function VideoPlayer({
     lastProgress.current = 0;
   }, [currentVideo?.url]);
 
-  // Once the new player is actually ready, seek to the correct position
+  // Once the player is ready, seek to the correct position
   useEffect(() => {
     if (ready && currentVideo?.startedAt && playerRef.current) {
       if (isPaused && seekEvent) {
-        // Video is paused — seek to the paused position
         isSyncing.current = true;
         playerRef.current.seekTo(seekEvent.position, 'seconds');
         lastProgress.current = seekEvent.position;
-        setTimeout(() => {
-          isSyncing.current = false;
-        }, 500);
+        setTimeout(() => { isSyncing.current = false; }, 500);
       } else {
-        // Video is playing — seek to where it should be based on elapsed time
         const elapsed = (Date.now() - new Date(currentVideo.startedAt).getTime()) / 1000;
         if (elapsed > 1) {
           isSyncing.current = true;
           playerRef.current.seekTo(elapsed, 'seconds');
           lastProgress.current = elapsed;
-          setTimeout(() => {
-            isSyncing.current = false;
-          }, 500);
+          setTimeout(() => { isSyncing.current = false; }, 500);
         }
       }
     }
   }, [currentVideo?.url, ready]);
 
-  // Handle seek events from the server (for all users)
+  // Handle seek events from the server (host seek broadcast)
   useEffect(() => {
     if (
       seekEvent &&
@@ -80,11 +79,51 @@ export default function VideoPlayer({
       isSyncing.current = true;
       playerRef.current.seekTo(seekEvent.position, 'seconds');
       lastProgress.current = seekEvent.position;
-      setTimeout(() => {
-        isSyncing.current = false;
-      }, 500);
+      setTimeout(() => { isSyncing.current = false; }, 500);
     }
   }, [seekEvent, ready]);
+
+  // =====================================================================
+  // CyTube-style periodic sync (every 500ms from server).
+  // For non-controllers: enforce both position AND pause/play state.
+  // This is the ONLY correction mechanism — no client-side guessing.
+  // =====================================================================
+  useEffect(() => {
+    if (!mediaSync || !playerRef.current || !ready) return;
+    if (canControl) return;
+
+    const player = playerRef.current;
+    const internal = player.getInternalPlayer();
+    if (!internal) return;
+
+    const serverTime = mediaSync.currentTime;
+    const serverPaused = mediaSync.paused;
+
+    // Enforce pause/play state
+    if (serverPaused) {
+      if (typeof internal.pauseVideo === 'function') {
+        internal.pauseVideo();
+      }
+    } else {
+      if (typeof internal.playVideo === 'function') {
+        internal.playVideo();
+      }
+    }
+
+    // Enforce position
+    if (typeof internal.getCurrentTime === 'function') {
+      const clientTime = internal.getCurrentTime();
+      const diff = serverTime - clientTime;
+
+      if (Math.abs(diff) > SYNC_ACCURACY) {
+        isSyncing.current = true;
+        const seekTarget = diff < 0 ? serverTime + 1 : serverTime;
+        player.seekTo(seekTarget, 'seconds');
+        lastProgress.current = seekTarget;
+        setTimeout(() => { isSyncing.current = false; }, 500);
+      }
+    }
+  }, [mediaSync, ready, canControl]);
 
   const handleDuration = useCallback(
     (dur: number) => {
@@ -96,62 +135,24 @@ export default function VideoPlayer({
     [onDuration]
   );
 
-  // Helper: snap a regular user back to the correct position
-  const snapToLive = useCallback(() => {
-    if (!playerRef.current || !currentVideo?.startedAt) return;
-    isSyncing.current = true;
-    if (isPaused && seekEvent) {
-      playerRef.current.seekTo(seekEvent.position, 'seconds');
-    } else {
-      const elapsed = (Date.now() - new Date(currentVideo.startedAt).getTime()) / 1000;
-      playerRef.current.seekTo(elapsed, 'seconds');
-    }
-    setTimeout(() => {
-      isSyncing.current = false;
-    }, 500);
-  }, [currentVideo?.startedAt, isPaused, seekEvent]);
-
-  // Pause callback
+  // Pause/play callbacks — only controllers act on these
   const handlePause = useCallback(() => {
     if (isSyncing.current) return;
     if (canControl) {
-      // Host/mod pauses for everyone
       onHostPause();
-    } else if (!isPaused) {
-      // Regular user tried to pause while video should be playing: force unpause
-      isSyncing.current = true;
-      const internal = playerRef.current?.getInternalPlayer();
-      if (internal?.playVideo) {
-        internal.playVideo();
-      }
-      setTimeout(() => {
-        isSyncing.current = false;
-      }, 500);
     }
-    // If isPaused is true, playing={false} keeps it paused — nothing to revert
-  }, [canControl, onHostPause, isPaused]);
+    // Non-controllers: do nothing — server mediaUpdate will correct state
+  }, [canControl, onHostPause]);
 
-  // Play callback
   const handlePlay = useCallback(() => {
     if (isSyncing.current) return;
     if (canControl) {
-      // Host/mod resumes for everyone
       onHostResume();
-    } else if (isPaused) {
-      // Regular user tried to play while host has paused: force re-pause
-      isSyncing.current = true;
-      const internal = playerRef.current?.getInternalPlayer();
-      if (internal?.pauseVideo) {
-        internal.pauseVideo();
-      }
-      setTimeout(() => {
-        isSyncing.current = false;
-      }, 500);
     }
-    // If isPaused is false, playing={true} keeps it going — nothing to revert
-  }, [canControl, onHostResume, isPaused]);
+    // Non-controllers: do nothing — server mediaUpdate will correct state
+  }, [canControl, onHostResume]);
 
-  // Progress callback — runs every second for ALL users
+  // Progress callback — only controllers use this for seek detection
   const handleProgress = useCallback(
     (state: { playedSeconds: number }) => {
       if (isSyncing.current) {
@@ -159,7 +160,6 @@ export default function VideoPlayer({
         return;
       }
 
-      // Controllers: detect large jumps as intentional seeks to broadcast
       if (canControl) {
         const diff = Math.abs(state.playedSeconds - lastProgress.current);
         if (diff > 3 && lastProgress.current > 0) {
@@ -167,36 +167,9 @@ export default function VideoPlayer({
         }
       }
 
-      // ALL users: always verify position against the server-authoritative timestamp
-      // If drifted by more than 2 seconds, snap to the correct position
-      let expectedPosition: number | null = null;
-      if (isPaused && seekEvent) {
-        expectedPosition = seekEvent.position;
-      } else if (currentVideo?.startedAt) {
-        expectedPosition = (Date.now() - new Date(currentVideo.startedAt).getTime()) / 1000;
-      }
-
-      if (expectedPosition !== null) {
-        const drift = Math.abs(state.playedSeconds - expectedPosition);
-        if (drift > 2) {
-          snapToLive();
-        }
-      }
-
       lastProgress.current = state.playedSeconds;
     },
-    [canControl, onHostSeek, snapToLive, isPaused, seekEvent, currentVideo?.startedAt]
-  );
-
-  // onSeek callback — snap everyone back to server position
-  // Controllers' intentional seeks are caught by handleProgress and broadcast first,
-  // then the server event updates startedAt so snapToLive lands on the new position
-  const handleSeek = useCallback(
-    (_seconds: number) => {
-      if (isSyncing.current) return;
-      snapToLive();
-    },
-    [snapToLive]
+    [canControl, onHostSeek]
   );
 
   if (!currentVideo) {
@@ -225,7 +198,6 @@ export default function VideoPlayer({
         onPause={handlePause}
         onPlay={handlePlay}
         onProgress={handleProgress}
-        onSeek={handleSeek}
         progressInterval={1000}
         config={{
           youtube: {
@@ -236,7 +208,6 @@ export default function VideoPlayer({
           },
         }}
       />
-      {/* Pause indicator when playback is paused */}
       {isPaused && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40 pointer-events-none">
           <div className="bg-black/70 rounded-full p-4">
