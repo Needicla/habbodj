@@ -1,127 +1,120 @@
 import { useRef, useCallback, useEffect, useState } from 'react';
 import ReactPlayer from 'react-player';
-import type { CurrentVideo, PlaybackSeekEvent, MediaSync } from '../../hooks/useRoom';
+import type { CurrentVideo, MediaSync } from '../../hooks/useRoom';
 
 interface VideoPlayerProps {
   currentVideo: CurrentVideo | null;
-  canControl: boolean; // true for host and moderators
+  canControl: boolean;
   isPaused: boolean;
-  seekEvent: PlaybackSeekEvent | null;
   mediaSync: MediaSync | null;
   onDuration: (duration: number) => void;
-  onHostPause: () => void;
-  onHostResume: () => void;
-  onHostSeek: (position: number) => void;
+  onSendMediaUpdate: (currentTime: number, paused: boolean) => void;
 }
 
-// How far off (in seconds) the client can be before we force-seek.
 const SYNC_ACCURACY = 2;
 
 export default function VideoPlayer({
   currentVideo,
   canControl,
   isPaused,
-  seekEvent,
   mediaSync,
   onDuration,
-  onHostPause,
-  onHostResume,
-  onHostSeek,
+  onSendMediaUpdate,
 }: VideoPlayerProps) {
   const playerRef = useRef<ReactPlayer>(null);
   const [ready, setReady] = useState(false);
   const durationReported = useRef(false);
-
-  // Track whether we're programmatically seeking (to ignore callbacks)
   const isSyncing = useRef(false);
-  // Track the last seek event timestamp we processed
-  const lastSeekTimestamp = useRef(0);
-  // Track last known progress for host seek detection
-  const lastProgress = useRef(0);
-  // Debounce timer for host pause (YouTube fires onPause during seeks)
-  const pauseDebounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Track local paused state so we only sendMediaUpdate on actual changes
+  // (mirrors CyTube's @paused flag on the player)
+  const localPaused = useRef(false);
 
-  // Reset ready state when the video URL changes
   useEffect(() => {
     setReady(false);
     durationReported.current = false;
     isSyncing.current = false;
-    lastProgress.current = 0;
+    localPaused.current = false;
   }, [currentVideo?.url]);
 
-  // Once the player is ready, seek to the correct position
+  // Initial seek when player becomes ready
   useEffect(() => {
-    if (ready && currentVideo?.startedAt && playerRef.current) {
-      if (isPaused && seekEvent) {
+    if (!ready || !playerRef.current || !currentVideo?.startedAt) return;
+
+    if (isPaused && mediaSync) {
+      isSyncing.current = true;
+      playerRef.current.seekTo(mediaSync.currentTime, 'seconds');
+      localPaused.current = true;
+      setTimeout(() => { isSyncing.current = false; }, 500);
+    } else {
+      const elapsed = (Date.now() - new Date(currentVideo.startedAt).getTime()) / 1000;
+      if (elapsed > 1) {
         isSyncing.current = true;
-        playerRef.current.seekTo(seekEvent.position, 'seconds');
-        lastProgress.current = seekEvent.position;
+        playerRef.current.seekTo(elapsed, 'seconds');
         setTimeout(() => { isSyncing.current = false; }, 500);
-      } else {
-        const elapsed = (Date.now() - new Date(currentVideo.startedAt).getTime()) / 1000;
-        if (elapsed > 1) {
-          isSyncing.current = true;
-          playerRef.current.seekTo(elapsed, 'seconds');
-          lastProgress.current = elapsed;
-          setTimeout(() => { isSyncing.current = false; }, 500);
-        }
       }
     }
   }, [currentVideo?.url, ready]);
 
-  // Handle seek events from the server (host seek broadcast)
-  useEffect(() => {
-    if (
-      seekEvent &&
-      seekEvent.timestamp !== lastSeekTimestamp.current &&
-      playerRef.current &&
-      ready
-    ) {
-      lastSeekTimestamp.current = seekEvent.timestamp;
-      isSyncing.current = true;
-      playerRef.current.seekTo(seekEvent.position, 'seconds');
-      lastProgress.current = seekEvent.position;
-      setTimeout(() => { isSyncing.current = false; }, 500);
-    }
-  }, [seekEvent, ready]);
-
   // =====================================================================
-  // CyTube-style periodic sync (every 500ms from server).
-  // For non-controllers: enforce both position AND pause/play state.
-  // This is the ONLY correction mechanism — no client-side guessing.
+  // CyTube handleMediaUpdate — exact copy of update.coffee logic:
+  //
+  //   if CLIENT.leader: return
+  //   if data.paused and not PLAYER.paused: seekTo + pause
+  //   if PLAYER.paused and not data.paused: play
+  //   PLAYER.getTime (seconds) ->
+  //     diff = time - seconds
+  //     if diff > accuracy: seekTo(time)
+  //     if diff < -accuracy: seekTo(time + 1)
   // =====================================================================
   useEffect(() => {
     if (!mediaSync || !playerRef.current || !ready) return;
+    // Leaders don't get synced — they ARE the source of truth
     if (canControl) return;
 
-    const player = playerRef.current;
-    const internal = player.getInternalPlayer();
+    const internal = playerRef.current.getInternalPlayer();
     if (!internal) return;
 
-    const serverTime = mediaSync.currentTime;
+    const time = mediaSync.currentTime;
     const serverPaused = mediaSync.paused;
 
-    // Enforce pause/play state
-    if (serverPaused) {
+    // "if data.paused and not PLAYER.paused → seekTo + pause"
+    if (serverPaused && !localPaused.current) {
+      isSyncing.current = true;
+      if (typeof internal.seekTo === 'function') {
+        internal.seekTo(time, true);
+      } else if (typeof internal.seekTo !== 'function' && typeof playerRef.current.seekTo === 'function') {
+        playerRef.current.seekTo(time, 'seconds');
+      }
       if (typeof internal.pauseVideo === 'function') {
         internal.pauseVideo();
       }
-    } else {
+      localPaused.current = true;
+      setTimeout(() => { isSyncing.current = false; }, 500);
+      return;
+    }
+
+    // "if PLAYER.paused and not data.paused → play"
+    if (localPaused.current && !serverPaused) {
+      isSyncing.current = true;
       if (typeof internal.playVideo === 'function') {
         internal.playVideo();
       }
+      localPaused.current = false;
+      setTimeout(() => { isSyncing.current = false; }, 500);
     }
 
-    // Enforce position
+    // "PLAYER.getTime → compare → seekTo if off"
     if (typeof internal.getCurrentTime === 'function') {
-      const clientTime = internal.getCurrentTime();
-      const diff = serverTime - clientTime;
+      const seconds = internal.getCurrentTime();
+      const diff = time - seconds;
 
-      if (Math.abs(diff) > SYNC_ACCURACY) {
+      if (diff > SYNC_ACCURACY) {
         isSyncing.current = true;
-        const seekTarget = diff < 0 ? serverTime + 1 : serverTime;
-        player.seekTo(seekTarget, 'seconds');
-        lastProgress.current = seekTarget;
+        playerRef.current.seekTo(time, 'seconds');
+        setTimeout(() => { isSyncing.current = false; }, 500);
+      } else if (diff < -SYNC_ACCURACY) {
+        isSyncing.current = true;
+        playerRef.current.seekTo(time + 1, 'seconds');
         setTimeout(() => { isSyncing.current = false; }, 500);
       }
     }
@@ -137,52 +130,53 @@ export default function VideoPlayer({
     [onDuration]
   );
 
-  // Pause/play callbacks — only controllers act on these
+  // =====================================================================
+  // CyTube onStateChange — exact copy of youtube.coffee logic:
+  //
+  //   if (PAUSED and not @paused) or (PLAYING and @paused):
+  //     @paused = (state == PAUSED)
+  //     if CLIENT.leader: sendVideoUpdate()
+  //
+  // Only the leader/host sends updates. Non-leaders do nothing.
+  // =====================================================================
   const handlePause = useCallback(() => {
     if (isSyncing.current) return;
-    if (canControl) {
-      // Debounce: YouTube fires onPause when the user seeks via the scrubber.
-      // Wait briefly — if a seek is detected in handleProgress, cancel this pause.
-      if (pauseDebounceTimer.current) clearTimeout(pauseDebounceTimer.current);
-      pauseDebounceTimer.current = setTimeout(() => {
-        pauseDebounceTimer.current = null;
-        onHostPause();
-      }, 300);
+
+    // Only send if state actually changed (CyTube: "PAUSED and not @paused")
+    if (canControl && !localPaused.current) {
+      localPaused.current = true;
+      const internal = playerRef.current?.getInternalPlayer();
+      const currentTime = (typeof internal?.getCurrentTime === 'function')
+        ? internal.getCurrentTime()
+        : 0;
+      onSendMediaUpdate(currentTime, true);
     }
-    // Non-controllers: do nothing — server mediaUpdate will correct state
-  }, [canControl, onHostPause]);
+  }, [canControl, onSendMediaUpdate]);
 
   const handlePlay = useCallback(() => {
     if (isSyncing.current) return;
-    if (canControl) {
-      onHostResume();
+
+    // Only send if state actually changed (CyTube: "PLAYING and @paused")
+    if (canControl && localPaused.current) {
+      localPaused.current = false;
+      const internal = playerRef.current?.getInternalPlayer();
+      const currentTime = (typeof internal?.getCurrentTime === 'function')
+        ? internal.getCurrentTime()
+        : 0;
+      onSendMediaUpdate(currentTime, false);
     }
-    // Non-controllers: do nothing — server mediaUpdate will correct state
-  }, [canControl, onHostResume]);
+  }, [canControl, onSendMediaUpdate]);
 
-  // Progress callback — only controllers use this for seek detection
-  const handleProgress = useCallback(
-    (state: { playedSeconds: number }) => {
-      if (isSyncing.current) {
-        lastProgress.current = state.playedSeconds;
-        return;
-      }
+  const handleSeek = useCallback(
+    (seconds: number) => {
+      if (isSyncing.current) return;
 
+      // Leader seeked — send update with current pause state
       if (canControl) {
-        const diff = Math.abs(state.playedSeconds - lastProgress.current);
-        if (diff > 3 && lastProgress.current > 0) {
-          // Cancel any pending pause — this was a seek, not a real pause
-          if (pauseDebounceTimer.current) {
-            clearTimeout(pauseDebounceTimer.current);
-            pauseDebounceTimer.current = null;
-          }
-          onHostSeek(state.playedSeconds);
-        }
+        onSendMediaUpdate(seconds, localPaused.current);
       }
-
-      lastProgress.current = state.playedSeconds;
     },
-    [canControl, onHostSeek]
+    [canControl, onSendMediaUpdate]
   );
 
   if (!currentVideo) {
@@ -210,8 +204,7 @@ export default function VideoPlayer({
         onDuration={handleDuration}
         onPause={handlePause}
         onPlay={handlePlay}
-        onProgress={handleProgress}
-        progressInterval={1000}
+        onSeek={handleSeek}
         config={{
           youtube: {
             playerVars: {

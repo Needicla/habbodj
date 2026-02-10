@@ -44,11 +44,6 @@ export interface RoomData {
   queue: VideoItem[];
 }
 
-export interface PlaybackSeekEvent {
-  position: number;
-  timestamp: number;
-}
-
 export interface MediaSync {
   currentTime: number;
   paused: boolean;
@@ -63,9 +58,8 @@ interface UseRoomReturn {
   moderators: string[];
   isHost: boolean;
   isModerator: boolean;
-  canModerate: boolean; // host OR moderator
+  canModerate: boolean;
   isPaused: boolean;
-  seekEvent: PlaybackSeekEvent | null;
   mediaSync: MediaSync | null;
   error: string | null;
   passwordRequired: boolean;
@@ -79,9 +73,7 @@ interface UseRoomReturn {
   submitPassword: (password: string) => void;
   togglePrivacy: (isPrivate: boolean, password?: string) => void;
   deleteRoom: () => void;
-  hostPause: () => void;
-  hostResume: () => void;
-  hostSeek: (position: number) => void;
+  sendMediaUpdate: (currentTime: number, paused: boolean) => void;
   promoteMod: (userId: string) => void;
   demoteMod: (userId: string) => void;
 }
@@ -96,7 +88,6 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
   const [error, setError] = useState<string | null>(null);
   const [passwordRequired, setPasswordRequired] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
-  const [seekEvent, setSeekEvent] = useState<PlaybackSeekEvent | null>(null);
   const [moderators, setModerators] = useState<string[]>([]);
   const [mediaSync, setMediaSync] = useState<MediaSync | null>(null);
   const joinedRef = useRef(false);
@@ -105,7 +96,6 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
   const isModerator = moderators.includes(userId);
   const canModerate = isHost || isModerator;
 
-  // Submit password for private room
   const submitPassword = useCallback(
     (password: string) => {
       if (socket && slug) {
@@ -117,17 +107,14 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
     [socket, slug]
   );
 
-  // Join room on mount
   useEffect(() => {
     if (!socket || !slug) return;
 
-    // Prevent double-join in strict mode
     if (joinedRef.current) return;
     joinedRef.current = true;
 
     socket.emit('joinRoom', { roomSlug: slug });
 
-    // Room state on join
     const handleRoomState = (data: {
       room: RoomData;
       users: RoomUser[];
@@ -139,16 +126,18 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
       setQueue(data.room.queue);
       setModerators(data.room.moderators || []);
       setError(null);
-      // Restore playback state (pause/position) for late joiners
       if (data.playbackState) {
         setIsPaused(data.playbackState.isPaused);
         if (data.playbackState.isPaused && data.playbackState.pausedAt > 0) {
-          setSeekEvent({ position: data.playbackState.pausedAt, timestamp: Date.now() });
+          // Seed initial mediaSync so VideoPlayer can sync on join
+          setMediaSync({
+            currentTime: data.playbackState.pausedAt,
+            paused: true,
+          });
         }
       } else {
         setIsPaused(false);
       }
-      // Request chat history
       socket.emit('getChatHistory');
     };
 
@@ -178,12 +167,11 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
     const handleNowPlaying = (data: { video: CurrentVideo | null }) => {
       setCurrentVideo(data.video);
       setIsPaused(false);
-      setSeekEvent(null);
+      setMediaSync(null);
     };
 
     const handleError = (data: { message: string }) => {
       setError(data.message);
-      // If wrong password, re-show the password prompt
       if (data.message === 'Incorrect room password') {
         setPasswordRequired(true);
       } else {
@@ -209,30 +197,14 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
       navigate('/', { replace: true });
     };
 
-    const handlePlaybackPause = (data: { pausedAt: number }) => {
-      setIsPaused(true);
-      setSeekEvent({ position: data.pausedAt, timestamp: Date.now() });
-    };
-
-    const handlePlaybackResume = (data: { startedAt: string }) => {
-      setCurrentVideo((prev) => (prev ? { ...prev, startedAt: data.startedAt } : prev));
-      setIsPaused(false);
-    };
-
-    const handlePlaybackSeek = (data: { position: number; isPaused: boolean; startedAt?: string }) => {
-      setIsPaused(data.isPaused);
-      if (data.startedAt) {
-        setCurrentVideo((prev) => (prev ? { ...prev, startedAt: data.startedAt! } : prev));
-      }
-      setSeekEvent({ position: data.position, timestamp: Date.now() });
-    };
-
     const handleModeratorsUpdated = (data: { moderators: string[] }) => {
       setModerators(data.moderators);
     };
 
+    // CyTube-style: ONE event for all playback sync
     const handleMediaUpdate = (data: { currentTime: number; paused: boolean }) => {
       setMediaSync(data);
+      setIsPaused(data.paused);
     };
 
     socket.on('roomState', handleRoomState);
@@ -247,9 +219,6 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
     socket.on('passwordRequired', handlePasswordRequired);
     socket.on('privacyUpdated', handlePrivacyUpdated);
     socket.on('roomDeleted', handleRoomDeleted);
-    socket.on('playbackPause', handlePlaybackPause);
-    socket.on('playbackResume', handlePlaybackResume);
-    socket.on('playbackSeek', handlePlaybackSeek);
     socket.on('moderatorsUpdated', handleModeratorsUpdated);
     socket.on('mediaUpdate', handleMediaUpdate);
 
@@ -268,9 +237,6 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
       socket.off('passwordRequired', handlePasswordRequired);
       socket.off('privacyUpdated', handlePrivacyUpdated);
       socket.off('roomDeleted', handleRoomDeleted);
-      socket.off('playbackPause', handlePlaybackPause);
-      socket.off('playbackResume', handlePlaybackResume);
-      socket.off('playbackSeek', handlePlaybackSeek);
       socket.off('moderatorsUpdated', handleModeratorsUpdated);
       socket.off('mediaUpdate', handleMediaUpdate);
     };
@@ -333,17 +299,13 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
     if (socket) socket.emit('deleteRoom');
   }, [socket]);
 
-  const hostPause = useCallback(() => {
-    if (socket) socket.emit('hostPause');
-  }, [socket]);
-
-  const hostResume = useCallback(() => {
-    if (socket) socket.emit('hostResume');
-  }, [socket]);
-
-  const hostSeek = useCallback((position: number) => {
-    if (socket) socket.emit('hostSeek', { position });
-  }, [socket]);
+  // CyTube-style: host sends mediaUpdate with { currentTime, paused }
+  const sendMediaUpdate = useCallback(
+    (currentTime: number, paused: boolean) => {
+      if (socket) socket.emit('mediaUpdate', { currentTime, paused });
+    },
+    [socket]
+  );
 
   const promoteMod = useCallback(
     (targetUserId: string) => {
@@ -370,7 +332,6 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
     isModerator,
     canModerate,
     isPaused,
-    seekEvent,
     mediaSync,
     error,
     passwordRequired,
@@ -384,9 +345,7 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
     submitPassword,
     togglePrivacy,
     deleteRoom,
-    hostPause,
-    hostResume,
-    hostSeek,
+    sendMediaUpdate,
     promoteMod,
     demoteMod,
   };

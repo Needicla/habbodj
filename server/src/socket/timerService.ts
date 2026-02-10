@@ -1,13 +1,13 @@
 import { Server } from 'socket.io';
 import { Room, IRoom } from '../models/Room';
 
-// Per-room timers
+// Per-room auto-advance timers
 const roomTimers = new Map<string, NodeJS.Timeout>();
 
-// Per-room periodic sync intervals (CyTube-style mediaUpdate)
+// Per-room periodic sync intervals
 const roomSyncIntervals = new Map<string, NodeJS.Timeout>();
 
-// Per-room playback state (pause/seek tracking)
+// Per-room playback state
 interface PlaybackState {
   isPaused: boolean;
   pausedAt: number; // seconds elapsed when paused
@@ -15,24 +15,18 @@ interface PlaybackState {
 
 const roomPlaybackState = new Map<string, PlaybackState>();
 
-/**
- * Get the current playback state for a room.
- */
 export function getPlaybackState(roomSlug: string): PlaybackState {
   return roomPlaybackState.get(roomSlug) || { isPaused: false, pausedAt: 0 };
 }
 
-/**
- * Clear playback state for a room (used on new video or room deletion).
- */
 export function clearPlaybackState(roomSlug: string): void {
   roomPlaybackState.delete(roomSlug);
   stopSyncInterval(roomSlug);
 }
 
 /**
- * Start periodic mediaUpdate broadcasts for a room (CyTube-style sync).
- * Every 2 seconds, emit the authoritative currentTime + paused state to all clients.
+ * CyTube-style periodic mediaUpdate broadcast.
+ * Sends { currentTime, paused } to all clients every 2 seconds.
  */
 export function startSyncInterval(io: Server, roomSlug: string): void {
   stopSyncInterval(roomSlug);
@@ -53,14 +47,11 @@ export function startSyncInterval(io: Server, roomSlug: string): void {
       currentTime,
       paused: state.isPaused,
     });
-  }, 500);
+  }, 2000);
 
   roomSyncIntervals.set(roomSlug, interval);
 }
 
-/**
- * Stop periodic mediaUpdate broadcasts for a room.
- */
 export function stopSyncInterval(roomSlug: string): void {
   const existing = roomSyncIntervals.get(roomSlug);
   if (existing) {
@@ -70,15 +61,45 @@ export function stopSyncInterval(roomSlug: string): void {
 }
 
 /**
- * Start the auto-advance timer for a room.
- * When the current video duration elapses, advance to the next video in queue.
+ * CyTube-style handleUpdate: host/mod sends { currentTime, paused },
+ * server updates internal state and rebroadcasts to entire room.
  */
+export async function handleHostMediaUpdate(
+  io: Server,
+  roomSlug: string,
+  currentTime: number,
+  paused: boolean
+): Promise<void> {
+  const room = await Room.findOne({ slug: roomSlug });
+  if (!room?.currentVideo) return;
+
+  if (paused) {
+    // Pause: store position, stop auto-advance timer
+    roomPlaybackState.set(roomSlug, { isPaused: true, pausedAt: currentTime });
+    stopVideoTimer(roomSlug);
+  } else {
+    // Playing: update startedAt so server time tracking stays correct
+    const newStartedAt = new Date(Date.now() - currentTime * 1000);
+    room.currentVideo.startedAt = newStartedAt;
+    await room.save();
+    roomPlaybackState.set(roomSlug, { isPaused: false, pausedAt: 0 });
+
+    // Restart auto-advance timer with remaining time
+    const remaining = Math.max(room.currentVideo.duration - currentTime, 1);
+    stopVideoTimer(roomSlug);
+    startVideoTimer(io, roomSlug, remaining);
+  }
+
+  // Rebroadcast to all clients (exactly like CyTube)
+  io.to(roomSlug).emit('mediaUpdate', { currentTime, paused });
+}
+
+// --- Auto-advance timer (unchanged) ---
+
 export function startVideoTimer(io: Server, roomSlug: string, durationSeconds: number): void {
-  // Clear any existing timer for this room
   stopVideoTimer(roomSlug);
 
   if (durationSeconds <= 0) {
-    // If no duration known, default to 4 minutes
     durationSeconds = 240;
   }
 
@@ -99,29 +120,22 @@ export function stopVideoTimer(roomSlug: string): void {
   }
 }
 
-/**
- * Advance to the next video in the queue. If queue is empty, set currentVideo to null.
- */
 export async function advanceQueue(io: Server, roomSlug: string): Promise<void> {
   try {
     const room = await Room.findOne({ slug: roomSlug });
     if (!room) return;
 
-    // Reset playback state for the new video
     clearPlaybackState(roomSlug);
 
     if (room.queue.length === 0) {
-      // No more videos
       room.currentVideo = null;
       await room.save();
-      stopSyncInterval(roomSlug);
       io.to(roomSlug).emit('nowPlaying', { video: null });
       io.to(roomSlug).emit('queueUpdated', { queue: room.queue });
       console.log(`[Timer] Room ${roomSlug}: queue empty`);
       return;
     }
 
-    // Pop the first item from the queue
     const nextVideo = room.queue.shift()!;
     room.currentVideo = {
       url: nextVideo.url,
@@ -135,12 +149,10 @@ export async function advanceQueue(io: Server, roomSlug: string): Promise<void> 
     io.to(roomSlug).emit('nowPlaying', { video: room.currentVideo });
     io.to(roomSlug).emit('queueUpdated', { queue: room.queue });
 
-    // Start timer for the new video
     if (nextVideo.duration > 0) {
       startVideoTimer(io, roomSlug, nextVideo.duration);
     }
 
-    // Start periodic sync broadcasts
     startSyncInterval(io, roomSlug);
 
     console.log(`[Timer] Room ${roomSlug}: now playing "${nextVideo.title}"`);
@@ -149,13 +161,9 @@ export async function advanceQueue(io: Server, roomSlug: string): Promise<void> 
   }
 }
 
-/**
- * Called when a client reports the actual video duration (useful since oEmbed doesn't provide it).
- */
 export function handleDurationReport(io: Server, roomSlug: string, durationSeconds: number): void {
   if (durationSeconds > 0) {
     const state = getPlaybackState(roomSlug);
-    // Don't restart timer if paused
     if (state.isPaused) {
       Room.findOne({ slug: roomSlug }).then((room) => {
         if (!room?.currentVideo) return;
@@ -165,98 +173,16 @@ export function handleDurationReport(io: Server, roomSlug: string, durationSecon
       return;
     }
 
-    // Restart the timer with the actual duration
-    // Account for time already elapsed
     Room.findOne({ slug: roomSlug }).then((room) => {
       if (!room?.currentVideo?.startedAt) return;
       const elapsed = (Date.now() - new Date(room.currentVideo.startedAt).getTime()) / 1000;
       const remaining = Math.max(durationSeconds - elapsed, 1);
 
-      // Update stored duration
       room.currentVideo.duration = durationSeconds;
       room.save();
 
       startVideoTimer(io, roomSlug, remaining);
-      // Ensure sync interval is running
       startSyncInterval(io, roomSlug);
     });
   }
-}
-
-/**
- * Host pauses playback for everyone in the room.
- */
-export async function pausePlayback(io: Server, roomSlug: string): Promise<void> {
-  const room = await Room.findOne({ slug: roomSlug });
-  if (!room?.currentVideo?.startedAt) return;
-
-  const elapsed = (Date.now() - new Date(room.currentVideo.startedAt).getTime()) / 1000;
-
-  roomPlaybackState.set(roomSlug, { isPaused: true, pausedAt: elapsed });
-  stopVideoTimer(roomSlug);
-
-  io.to(roomSlug).emit('playbackPause', { pausedAt: elapsed });
-  console.log(`[Playback] Room ${roomSlug}: paused at ${elapsed.toFixed(1)}s`);
-}
-
-/**
- * Host resumes playback for everyone in the room.
- */
-export async function resumePlayback(io: Server, roomSlug: string): Promise<void> {
-  const state = roomPlaybackState.get(roomSlug);
-  if (!state?.isPaused) return;
-
-  const room = await Room.findOne({ slug: roomSlug });
-  if (!room?.currentVideo) return;
-
-  // Adjust startedAt so elapsed calculation works correctly going forward
-  const newStartedAt = new Date(Date.now() - state.pausedAt * 1000);
-  room.currentVideo.startedAt = newStartedAt;
-  await room.save();
-
-  // Restart timer with remaining time
-  const remaining = Math.max(room.currentVideo.duration - state.pausedAt, 1);
-  startVideoTimer(io, roomSlug, remaining);
-
-  roomPlaybackState.set(roomSlug, { isPaused: false, pausedAt: 0 });
-
-  io.to(roomSlug).emit('playbackResume', { startedAt: newStartedAt.toISOString() });
-  console.log(`[Playback] Room ${roomSlug}: resumed from ${state.pausedAt.toFixed(1)}s`);
-}
-
-/**
- * Host seeks to a specific position for everyone in the room.
- */
-export async function seekPlayback(io: Server, roomSlug: string, position: number): Promise<void> {
-  const room = await Room.findOne({ slug: roomSlug });
-  if (!room?.currentVideo) return;
-
-  const state = getPlaybackState(roomSlug);
-
-  // Clamp position to valid range
-  position = Math.max(0, Math.min(position, room.currentVideo.duration || Infinity));
-
-  if (state.isPaused) {
-    // Update paused position, don't restart timer
-    roomPlaybackState.set(roomSlug, { isPaused: true, pausedAt: position });
-    io.to(roomSlug).emit('playbackSeek', { position, isPaused: true });
-  } else {
-    // Update startedAt and restart timer
-    const newStartedAt = new Date(Date.now() - position * 1000);
-    room.currentVideo.startedAt = newStartedAt;
-    await room.save();
-
-    const remaining = Math.max(room.currentVideo.duration - position, 1);
-    stopVideoTimer(roomSlug);
-    startVideoTimer(io, roomSlug, remaining);
-
-    roomPlaybackState.set(roomSlug, { isPaused: false, pausedAt: 0 });
-    io.to(roomSlug).emit('playbackSeek', {
-      position,
-      isPaused: false,
-      startedAt: newStartedAt.toISOString(),
-    });
-  }
-
-  console.log(`[Playback] Room ${roomSlug}: seeked to ${position.toFixed(1)}s (paused: ${state.isPaused})`);
 }

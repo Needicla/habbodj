@@ -31,7 +31,6 @@ export default function RoomPage() {
     isModerator,
     canModerate,
     isPaused,
-    seekEvent,
     mediaSync,
     error,
     passwordRequired,
@@ -45,9 +44,7 @@ export default function RoomPage() {
     submitPassword,
     togglePrivacy,
     deleteRoom,
-    hostPause,
-    hostResume,
-    hostSeek,
+    sendMediaUpdate,
     promoteMod,
     demoteMod,
   } = useRoom(socket, slug || '', user?._id || '');
@@ -266,12 +263,9 @@ export default function RoomPage() {
             currentVideo={currentVideo}
             canControl={canModerate}
             isPaused={isPaused}
-            seekEvent={seekEvent}
             mediaSync={mediaSync}
             onDuration={reportDuration}
-            onHostPause={hostPause}
-            onHostResume={hostResume}
-            onHostSeek={hostSeek}
+            onSendMediaUpdate={sendMediaUpdate}
           />
           <NowPlaying currentVideo={currentVideo} canModerate={canModerate} onSkip={skipVideo} />
           <AddVideoForm onAdd={addVideo} />
