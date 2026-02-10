@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs';
 import { verifyToken } from '../middleware/auth';
 import { User } from '../models/User';
 import { Room } from '../models/Room';
-import { registerRoomHandlers } from './roomHandlers';
+import { registerRoomHandlers, clearRoomPresence } from './roomHandlers';
 import { registerChatHandlers } from './chatHandlers';
 import { registerQueueHandlers } from './queueHandlers';
 import { advanceQueue, stopVideoTimer } from './timerService';
@@ -176,5 +176,41 @@ function registerModerationHandlers(io: Server, socket: any): void {
     io.to(currentRoom).emit('privacyUpdated', { isPrivate });
 
     console.log(`[Mod] ${socket.data.username} set room ${currentRoom} to ${isPrivate ? 'private' : 'public'}`);
+  });
+
+  // Delete the room entirely (host only)
+  socket.on('deleteRoom', async () => {
+    const currentRoom = socket.data.currentRoom as string | undefined;
+    if (!currentRoom) return;
+
+    const userId = socket.data.userId as string;
+    const room = await Room.findOne({ slug: currentRoom });
+    if (!room) return;
+
+    if (room.creatorId.toString() !== userId) {
+      socket.emit('error', { message: 'Only the room host can delete the room' });
+      return;
+    }
+
+    // Notify all users in the room before removing them
+    io.to(currentRoom).emit('roomDeleted', { message: 'This room has been deleted by the host' });
+
+    // Disconnect all sockets from the room
+    const sockets = await io.in(currentRoom).fetchSockets();
+    for (const s of sockets) {
+      s.leave(currentRoom);
+      (s.data as any).currentRoom = undefined;
+    }
+
+    // Stop any active video timer
+    stopVideoTimer(currentRoom);
+
+    // Clear in-memory presence
+    clearRoomPresence(currentRoom);
+
+    // Delete from database
+    await Room.deleteOne({ slug: currentRoom });
+
+    console.log(`[Mod] ${socket.data.username} deleted room ${currentRoom}`);
   });
 }

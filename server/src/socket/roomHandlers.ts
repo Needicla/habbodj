@@ -43,6 +43,11 @@ export function isUserInRoom(slug: string, userId: string): boolean {
   return false;
 }
 
+/** Remove all presence data for a room (used when room is deleted). */
+export function clearRoomPresence(slug: string): void {
+  roomPresence.delete(slug);
+}
+
 export function registerRoomHandlers(io: Server, socket: Socket): void {
   socket.on('joinRoom', async (data: { roomSlug: string; password?: string }) => {
     try {

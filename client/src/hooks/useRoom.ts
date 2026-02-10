@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Socket } from 'socket.io-client';
 
 export interface RoomUser {
@@ -60,9 +61,11 @@ interface UseRoomReturn {
   reportDuration: (duration: number) => void;
   submitPassword: (password: string) => void;
   togglePrivacy: (isPrivate: boolean, password?: string) => void;
+  deleteRoom: () => void;
 }
 
 export function useRoom(socket: Socket | null, slug: string, userId: string): UseRoomReturn {
+  const navigate = useNavigate();
   const [room, setRoom] = useState<RoomData | null>(null);
   const [users, setUsers] = useState<RoomUser[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -157,6 +160,11 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
       setRoom((prev) => (prev ? { ...prev, isPrivate: data.isPrivate } : prev));
     };
 
+    const handleRoomDeleted = () => {
+      setRoom(null);
+      navigate('/', { replace: true });
+    };
+
     socket.on('roomState', handleRoomState);
     socket.on('chatHistory', handleChatHistory);
     socket.on('userJoined', handleUserJoined);
@@ -168,6 +176,7 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
     socket.on('kicked', handleKicked);
     socket.on('passwordRequired', handlePasswordRequired);
     socket.on('privacyUpdated', handlePrivacyUpdated);
+    socket.on('roomDeleted', handleRoomDeleted);
 
     return () => {
       joinedRef.current = false;
@@ -183,8 +192,9 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
       socket.off('kicked', handleKicked);
       socket.off('passwordRequired', handlePasswordRequired);
       socket.off('privacyUpdated', handlePrivacyUpdated);
+      socket.off('roomDeleted', handleRoomDeleted);
     };
-  }, [socket, slug]);
+  }, [socket, slug, navigate]);
 
   const sendChat = useCallback(
     (message: string) => {
@@ -239,6 +249,10 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
     [socket]
   );
 
+  const deleteRoom = useCallback(() => {
+    if (socket) socket.emit('deleteRoom');
+  }, [socket]);
+
   return {
     room,
     users,
@@ -257,5 +271,6 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
     reportDuration,
     submitPassword,
     togglePrivacy,
+    deleteRoom,
   };
 }
