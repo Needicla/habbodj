@@ -8,6 +8,7 @@ interface RoomInfo {
   name: string;
   slug: string;
   creatorId: string;
+  isPrivate: boolean;
   queueLength: number;
   currentVideo: { title: string } | null;
   createdAt: string;
@@ -17,6 +18,8 @@ export default function HomePage() {
   const [rooms, setRooms] = useState<RoomInfo[]>([]);
   const [roomCounts, setRoomCounts] = useState<Record<string, number>>({});
   const [newRoomName, setNewRoomName] = useState('');
+  const [isPrivate, setIsPrivate] = useState(false);
+  const [roomPassword, setRoomPassword] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
   const [showCreate, setShowCreate] = useState(false);
@@ -50,7 +53,12 @@ export default function HomePage() {
     setError('');
 
     try {
-      const { data } = await api.post('/rooms', { name: newRoomName.trim() });
+      const payload: Record<string, any> = { name: newRoomName.trim() };
+      if (isPrivate) {
+        payload.isPrivate = true;
+        payload.password = roomPassword;
+      }
+      const { data } = await api.post('/rooms', payload);
       navigate(`/room/${data.slug}`);
     } catch (err: any) {
       setError(err.response?.data?.error || 'Failed to create room');
@@ -82,20 +90,49 @@ export default function HomePage() {
               {error}
             </div>
           )}
-          <form onSubmit={handleCreateRoom} className="flex gap-3">
-            <input
-              type="text"
-              value={newRoomName}
-              onChange={(e) => setNewRoomName(e.target.value)}
-              className="input-field flex-1"
-              placeholder="Room name (e.g. Chill Vibes)"
-              minLength={2}
-              maxLength={50}
-              required
-            />
-            <button type="submit" disabled={creating} className="btn-primary whitespace-nowrap">
-              {creating ? 'Creating...' : 'Create'}
-            </button>
+          <form onSubmit={handleCreateRoom} className="space-y-3">
+            <div className="flex gap-3">
+              <input
+                type="text"
+                value={newRoomName}
+                onChange={(e) => setNewRoomName(e.target.value)}
+                className="input-field flex-1"
+                placeholder="Room name (e.g. Chill Vibes)"
+                minLength={2}
+                maxLength={50}
+                required
+              />
+              <button type="submit" disabled={creating} className="btn-primary whitespace-nowrap">
+                {creating ? 'Creating...' : 'Create'}
+              </button>
+            </div>
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={isPrivate}
+                  onChange={(e) => {
+                    setIsPrivate(e.target.checked);
+                    if (!e.target.checked) setRoomPassword('');
+                  }}
+                  className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-purple-500 focus:ring-purple-500"
+                />
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+                </svg>
+                Private room
+              </label>
+              {isPrivate && (
+                <input
+                  type="password"
+                  value={roomPassword}
+                  onChange={(e) => setRoomPassword(e.target.value)}
+                  className="input-field flex-1"
+                  placeholder="Room password"
+                  required
+                />
+              )}
+            </div>
           </form>
         </div>
       )}
@@ -117,7 +154,12 @@ export default function HomePage() {
                 className="card text-left hover:border-purple-500/50 transition-all duration-200 group cursor-pointer"
               >
                 <div className="flex items-start justify-between mb-3">
-                  <h3 className="text-lg font-semibold group-hover:text-purple-400 transition-colors">
+                  <h3 className="text-lg font-semibold group-hover:text-purple-400 transition-colors flex items-center gap-2">
+                    {room.isPrivate && (
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-yellow-500 shrink-0" viewBox="0 0 20 20" fill="currentColor" title="Private room">
+                        <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+                      </svg>
+                    )}
                     {room.name}
                   </h3>
                   <span className="text-xs bg-gray-800 px-2 py-1 rounded-full text-gray-400">

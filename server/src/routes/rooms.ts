@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import bcrypt from 'bcryptjs';
 import { Room } from '../models/Room';
 import { authMiddleware } from '../middleware/auth';
 import { slugify } from '../utils/helpers';
@@ -9,7 +10,7 @@ const router = Router();
 router.get('/', async (_req: Request, res: Response) => {
   try {
     const rooms = await Room.find()
-      .select('name slug creatorId currentVideo queue createdAt')
+      .select('name slug creatorId isPrivate currentVideo queue createdAt')
       .sort({ createdAt: -1 })
       .lean();
 
@@ -44,10 +45,15 @@ router.get('/:slug', async (req: Request, res: Response) => {
 // POST /api/rooms — create a new room (auth required)
 router.post('/', authMiddleware, async (req: Request, res: Response) => {
   try {
-    const { name } = req.body;
+    const { name, isPrivate, password } = req.body;
 
     if (!name || name.trim().length < 2 || name.trim().length > 50) {
       res.status(400).json({ error: 'Room name must be 2-50 characters' });
+      return;
+    }
+
+    if (isPrivate && (!password || password.length < 1)) {
+      res.status(400).json({ error: 'Private rooms require a password' });
       return;
     }
 
@@ -63,11 +69,18 @@ router.post('/', authMiddleware, async (req: Request, res: Response) => {
       return;
     }
 
-    const room = await Room.create({
+    const roomData: Record<string, any> = {
       name: name.trim(),
       slug,
       creatorId: req.user!.userId,
-    });
+      isPrivate: !!isPrivate,
+    };
+
+    if (isPrivate && password) {
+      roomData.password = await bcrypt.hash(password, 10);
+    }
+
+    const room = await Room.create(roomData);
 
     res.status(201).json(room.toJSON());
   } catch (error) {

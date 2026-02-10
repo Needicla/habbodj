@@ -28,6 +28,8 @@ export interface IRoom extends Document {
   name: string;
   slug: string;
   creatorId: mongoose.Types.ObjectId;
+  isPrivate: boolean;
+  password?: string; // bcrypt-hashed
   currentVideo: ICurrentVideo | null;
   queue: IVideoItem[];
   createdAt: Date;
@@ -82,6 +84,14 @@ const roomSchema = new Schema<IRoom>(
       ref: 'User',
       required: true,
     },
+    isPrivate: {
+      type: Boolean,
+      default: false,
+    },
+    password: {
+      type: String,
+      default: undefined,
+    },
     currentVideo: {
       type: currentVideoSchema,
       default: null,
@@ -99,6 +109,7 @@ const roomSchema = new Schema<IRoom>(
 roomSchema.set('toJSON', {
   transform(_doc, ret: Record<string, any>) {
     delete ret.__v;
+    delete ret.password; // never expose hashed password
     return ret;
   },
 });

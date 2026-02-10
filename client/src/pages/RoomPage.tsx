@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useSocket } from '../contexts/SocketContext';
@@ -14,6 +15,9 @@ export default function RoomPage() {
   const { user } = useAuth();
   const { socket, connected } = useSocket();
   const navigate = useNavigate();
+  const [passwordInput, setPasswordInput] = useState('');
+  const [showPrivacyPanel, setShowPrivacyPanel] = useState(false);
+  const [privacyPassword, setPrivacyPassword] = useState('');
 
   const {
     room,
@@ -23,6 +27,7 @@ export default function RoomPage() {
     queue,
     isHost,
     error,
+    passwordRequired,
     sendChat,
     addVideo,
     vote,
@@ -30,6 +35,8 @@ export default function RoomPage() {
     removeVideo,
     removeUser,
     reportDuration,
+    submitPassword,
+    togglePrivacy,
   } = useRoom(socket, slug || '', user?._id || '');
 
   if (!connected) {
@@ -38,6 +45,57 @@ export default function RoomPage() {
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-4"></div>
           <p className="text-gray-400">Connecting...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Password required for private room
+  if (passwordRequired) {
+    return (
+      <div className="flex items-center justify-center h-[calc(100vh-60px)]">
+        <div className="card max-w-sm w-full mx-4">
+          <div className="text-center mb-4">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-yellow-500 mx-auto mb-3" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+            </svg>
+            <h2 className="text-xl font-bold">Private Room</h2>
+            <p className="text-gray-400 text-sm mt-1">This room requires a password to enter</p>
+          </div>
+          {error && (
+            <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-2 mb-3 text-red-400 text-sm">
+              {error}
+            </div>
+          )}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (passwordInput.trim()) submitPassword(passwordInput);
+            }}
+            className="space-y-3"
+          >
+            <input
+              type="password"
+              value={passwordInput}
+              onChange={(e) => setPasswordInput(e.target.value)}
+              className="input-field w-full"
+              placeholder="Enter room password"
+              autoFocus
+              required
+            />
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => navigate('/')}
+                className="flex-1 px-4 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors text-sm font-medium"
+              >
+                Back
+              </button>
+              <button type="submit" className="flex-1 btn-primary">
+                Enter Room
+              </button>
+            </div>
+          </form>
         </div>
       </div>
     );
@@ -80,14 +138,86 @@ export default function RoomPage() {
             &larr; Back
           </button>
           <h1 className="text-lg font-bold">{room.name}</h1>
+          {room.isPrivate && (
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-yellow-500 shrink-0" viewBox="0 0 20 20" fill="currentColor" title="Private room">
+              <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+            </svg>
+          )}
           {isHost && (
             <span className="text-[10px] bg-purple-500/20 text-purple-400 px-2 py-0.5 rounded-full font-medium">
               HOST
             </span>
           )}
         </div>
-        <div className="text-sm text-gray-400">
-          {users.length} user{users.length !== 1 ? 's' : ''}
+        <div className="flex items-center gap-3">
+          {isHost && (
+            <div className="relative">
+              <button
+                onClick={() => setShowPrivacyPanel(!showPrivacyPanel)}
+                className="text-xs px-2 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors flex items-center gap-1.5"
+                title={room.isPrivate ? 'Room is private' : 'Room is public'}
+              >
+                {room.isPrivate ? (
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-yellow-500" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+                  </svg>
+                ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M10 2a5 5 0 00-5 5v2a2 2 0 00-2 2v5a2 2 0 002 2h10a2 2 0 002-2v-5a2 2 0 00-2-2H7V7a3 3 0 015.905-.75 1 1 0 001.937-.5A5.002 5.002 0 0010 2z" />
+                  </svg>
+                )}
+                {room.isPrivate ? 'Private' : 'Public'}
+              </button>
+
+              {showPrivacyPanel && (
+                <div className="absolute right-0 top-full mt-2 w-64 bg-gray-800 border border-gray-700 rounded-lg shadow-xl p-3 z-50">
+                  {room.isPrivate ? (
+                    <>
+                      <p className="text-xs text-gray-400 mb-2">This room is currently private. Make it public?</p>
+                      <button
+                        onClick={() => {
+                          togglePrivacy(false);
+                          setShowPrivacyPanel(false);
+                          setPrivacyPassword('');
+                        }}
+                        className="w-full btn-primary text-xs py-1.5"
+                      >
+                        Make Public
+                      </button>
+                    </>
+                  ) : (
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        if (privacyPassword.trim()) {
+                          togglePrivacy(true, privacyPassword);
+                          setShowPrivacyPanel(false);
+                          setPrivacyPassword('');
+                        }
+                      }}
+                    >
+                      <p className="text-xs text-gray-400 mb-2">Set a password to make this room private.</p>
+                      <input
+                        type="password"
+                        value={privacyPassword}
+                        onChange={(e) => setPrivacyPassword(e.target.value)}
+                        className="input-field w-full text-xs mb-2"
+                        placeholder="Room password"
+                        autoFocus
+                        required
+                      />
+                      <button type="submit" className="w-full btn-primary text-xs py-1.5">
+                        Make Private
+                      </button>
+                    </form>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          <div className="text-sm text-gray-400">
+            {users.length} user{users.length !== 1 ? 's' : ''}
+          </div>
         </div>
       </div>
 

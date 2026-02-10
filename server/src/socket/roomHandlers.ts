@@ -1,4 +1,5 @@
 import { Server, Socket } from 'socket.io';
+import bcrypt from 'bcryptjs';
 import { Room } from '../models/Room';
 import { User } from '../models/User';
 
@@ -43,9 +44,9 @@ export function isUserInRoom(slug: string, userId: string): boolean {
 }
 
 export function registerRoomHandlers(io: Server, socket: Socket): void {
-  socket.on('joinRoom', async (data: { roomSlug: string }) => {
+  socket.on('joinRoom', async (data: { roomSlug: string; password?: string }) => {
     try {
-      const { roomSlug } = data;
+      const { roomSlug, password } = data;
       const userId = (socket.data as any).userId as string;
 
       // Leave any previous room
@@ -54,11 +55,25 @@ export function registerRoomHandlers(io: Server, socket: Socket): void {
         leaveRoom(io, socket, prevRoom);
       }
 
-      // Verify room exists
-      const room = await Room.findOne({ slug: roomSlug });
+      // Verify room exists (include password field for comparison)
+      const room = await Room.findOne({ slug: roomSlug }).select('+password');
       if (!room) {
         socket.emit('error', { message: 'Room not found' });
         return;
+      }
+
+      // If room is private and user is not the host, verify password
+      const isHost = room.creatorId.toString() === userId;
+      if (room.isPrivate && !isHost) {
+        if (!password) {
+          socket.emit('passwordRequired', { roomSlug });
+          return;
+        }
+        const valid = await bcrypt.compare(password, room.password || '');
+        if (!valid) {
+          socket.emit('error', { message: 'Incorrect room password' });
+          return;
+        }
       }
 
       // Load user info

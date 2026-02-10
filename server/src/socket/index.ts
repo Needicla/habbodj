@@ -1,5 +1,6 @@
 import { Server as HttpServer } from 'http';
 import { Server } from 'socket.io';
+import bcrypt from 'bcryptjs';
 import { verifyToken } from '../middleware/auth';
 import { User } from '../models/User';
 import { Room } from '../models/Room';
@@ -139,5 +140,41 @@ function registerModerationHandlers(io: Server, socket: any): void {
     });
 
     console.log(`[Mod] ${socket.data.username} kicked user ${targetUserId} from ${currentRoom}`);
+  });
+
+  // Toggle room privacy (make private or public)
+  socket.on('togglePrivacy', async (data: { isPrivate: boolean; password?: string }) => {
+    const currentRoom = socket.data.currentRoom as string | undefined;
+    if (!currentRoom) return;
+
+    const userId = socket.data.userId as string;
+    const room = await Room.findOne({ slug: currentRoom });
+    if (!room) return;
+
+    if (room.creatorId.toString() !== userId) {
+      socket.emit('error', { message: 'Only the room host can change room privacy' });
+      return;
+    }
+
+    const { isPrivate, password } = data;
+
+    if (isPrivate && (!password || password.length < 1)) {
+      socket.emit('error', { message: 'A password is required to make the room private' });
+      return;
+    }
+
+    room.isPrivate = isPrivate;
+    if (isPrivate && password) {
+      room.password = await bcrypt.hash(password, 10);
+    } else if (!isPrivate) {
+      room.password = undefined;
+    }
+
+    await room.save();
+
+    // Broadcast the privacy change to all users in the room
+    io.to(currentRoom).emit('privacyUpdated', { isPrivate });
+
+    console.log(`[Mod] ${socket.data.username} set room ${currentRoom} to ${isPrivate ? 'private' : 'public'}`);
   });
 }

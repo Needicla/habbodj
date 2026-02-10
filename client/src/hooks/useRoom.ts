@@ -37,6 +37,7 @@ export interface RoomData {
   name: string;
   slug: string;
   creatorId: string;
+  isPrivate: boolean;
   currentVideo: CurrentVideo | null;
   queue: VideoItem[];
 }
@@ -49,6 +50,7 @@ interface UseRoomReturn {
   queue: VideoItem[];
   isHost: boolean;
   error: string | null;
+  passwordRequired: boolean;
   sendChat: (message: string) => void;
   addVideo: (url: string) => void;
   vote: (videoIndex: number, type: 'up' | 'down') => void;
@@ -56,6 +58,8 @@ interface UseRoomReturn {
   removeVideo: (videoIndex: number) => void;
   removeUser: (userId: string) => void;
   reportDuration: (duration: number) => void;
+  submitPassword: (password: string) => void;
+  togglePrivacy: (isPrivate: boolean, password?: string) => void;
 }
 
 export function useRoom(socket: Socket | null, slug: string, userId: string): UseRoomReturn {
@@ -65,9 +69,22 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
   const [currentVideo, setCurrentVideo] = useState<CurrentVideo | null>(null);
   const [queue, setQueue] = useState<VideoItem[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [passwordRequired, setPasswordRequired] = useState(false);
   const joinedRef = useRef(false);
 
   const isHost = room?.creatorId === userId;
+
+  // Submit password for private room
+  const submitPassword = useCallback(
+    (password: string) => {
+      if (socket && slug) {
+        setPasswordRequired(false);
+        setError(null);
+        socket.emit('joinRoom', { roomSlug: slug, password });
+      }
+    },
+    [socket, slug]
+  );
 
   // Join room on mount
   useEffect(() => {
@@ -119,12 +136,25 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
 
     const handleError = (data: { message: string }) => {
       setError(data.message);
-      setTimeout(() => setError(null), 5000);
+      // If wrong password, re-show the password prompt
+      if (data.message === 'Incorrect room password') {
+        setPasswordRequired(true);
+      } else {
+        setTimeout(() => setError(null), 5000);
+      }
     };
 
     const handleKicked = (data: { message: string }) => {
       setError(data.message);
       setRoom(null);
+    };
+
+    const handlePasswordRequired = () => {
+      setPasswordRequired(true);
+    };
+
+    const handlePrivacyUpdated = (data: { isPrivate: boolean }) => {
+      setRoom((prev) => (prev ? { ...prev, isPrivate: data.isPrivate } : prev));
     };
 
     socket.on('roomState', handleRoomState);
@@ -136,6 +166,8 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
     socket.on('nowPlaying', handleNowPlaying);
     socket.on('error', handleError);
     socket.on('kicked', handleKicked);
+    socket.on('passwordRequired', handlePasswordRequired);
+    socket.on('privacyUpdated', handlePrivacyUpdated);
 
     return () => {
       joinedRef.current = false;
@@ -149,6 +181,8 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
       socket.off('nowPlaying', handleNowPlaying);
       socket.off('error', handleError);
       socket.off('kicked', handleKicked);
+      socket.off('passwordRequired', handlePasswordRequired);
+      socket.off('privacyUpdated', handlePrivacyUpdated);
     };
   }, [socket, slug]);
 
@@ -198,6 +232,13 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
     [socket]
   );
 
+  const togglePrivacy = useCallback(
+    (isPrivate: boolean, password?: string) => {
+      if (socket) socket.emit('togglePrivacy', { isPrivate, password });
+    },
+    [socket]
+  );
+
   return {
     room,
     users,
@@ -206,6 +247,7 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
     queue,
     isHost,
     error,
+    passwordRequired,
     sendChat,
     addVideo,
     vote,
@@ -213,5 +255,7 @@ export function useRoom(socket: Socket | null, slug: string, userId: string): Us
     removeVideo,
     removeUser,
     reportDuration,
+    submitPassword,
+    togglePrivacy,
   };
 }
